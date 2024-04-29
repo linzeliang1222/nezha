@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  release:
+  publish-docker-image:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -76,5 +76,5 @@ jobs:
           tags: |
             ${{ steps.image-name.outputs.GHRC_IMAGE_NAME }}:latest
             ${{ steps.image-name.outputs.GHRC_IMAGE_NAME }}:${{ steps.extract_branch.outputs.tag }}
-            ${{ steps.image-name.outputs.ALI_IMAGE_NAME }}:latest
-            ${{ steps.image-name.outputs.ALI_IMAGE_NAME }}:${{ steps.extract_branch.outputs.tag }}
+            ${{ steps.image-name.outputs.DOCKERHUB_IMAGE_NAME }}:latest
+            ${{ steps.image-name.outputs.DOCKERHUB_IMAGE_NAME }}:${{ steps.extract_branch.outputs.tag }}

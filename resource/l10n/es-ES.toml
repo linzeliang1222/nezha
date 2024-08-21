@@ -331,6 +331,9 @@ other = "Tema de Frontend"
 [CustomCodes]
 other = "Códigos Personalizados (Incluye style y script)"
 
+[CustomCodesDashboard]
+other = "Custom Codes for Dashboard"
+
 [AccessPassword]
 other = "Contraseña de Acceso al Frontend"
 
@@ -640,8 +643,17 @@ other = "Plantilla"
 [Stat]
 other = "Stat"
 
+[Temperature]
+other = "Temperatura"
+
 [DisableSwitchTemplateInFrontend]
 other = "Deshabilitar Cambio de Plantilla en Frontend"
 
 [ServersOnWorldMap]
 other = "Servidores en el mapa mundial"
+
+[NAT]
+other = "NAT"
+
+[NetworkSpiterList]
+other = "Red Monitor"

@@ -76,3 +76,13 @@ func GenerateRandomString(n int) (string, error) {
 	}
 	return string(ret), nil
 }
+
+func Uint64SubInt64(a uint64, b int64) uint64 {
+	if b < 0 {
+		return a + uint64(-b)
+	}
+	if a < uint64(b) {
+		return 0
+	}
+	return a - uint64(b)
+}

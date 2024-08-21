@@ -12,6 +12,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Fetch IPInfo GeoIP Database
+        env: 
+          IPINFO_TOKEN: ${{ secrets.IPINFO_TOKEN }}
+        run: |
+          rm pkg/geoip/geoip.db
+          wget -O pkg/geoip/geoip.db https://ipinfo.io/data/free/country.mmdb?token=${IPINFO_TOKEN}
+
       - name: Extract branch name
         run: |
           export TAG_NAME=$(echo ${GITHUB_REF#refs/tags/})
@@ -22,7 +29,7 @@ jobs:
         uses: crazy-max/ghaction-xgo@v2
         with:
           xgo_version: latest
-          go_version: 1.20.x
+          go_version: 1.21.x
           dest: dist
           pkg: cmd/dashboard
           prefix: dashboard
@@ -30,11 +37,13 @@ jobs:
           v: true
           x: false
           race: false
+          tags: timetzdata
           ldflags: -s -w --extldflags '-static -fpic' -X github.com/naiba/nezha/service/singleton.Version=${{ steps.extract_branch.outputs.tag }}
           buildmode: default
 
       - name: fix dist
         run: |
+          ls -al dist/
           mv dist/dashboard-linux-arm-7 dist/dashboard-linux-arm
 
       - name: Log in to the GHCR
@@ -106,3 +115,16 @@ jobs:
           curl -s https://purge.jsdelivr.net/gh/$LOWER_USERNAME/nezha@master/script/nezha-agent.service
           curl -s https://purge.jsdelivr.net/gh/$LOWER_USERNAME/nezha@master/script/docker-compose.yaml
           curl -s https://purge.jsdelivr.net/gh/$LOWER_USERNAME/nezha@master/script/config.yaml
+
+      - name: Trigger sync
+        if: ${{ env.SYNCED == 0 }}
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+            owner: 'naiba',
+            repo: 'nezha',
+            workflow_id: 'sync-release.yml',
+            ref: 'master'
+            })

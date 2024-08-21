@@ -3,16 +3,26 @@ body {
     padding-bottom: 30px !important;
 }
 
+.container-fluid{
+    max-width: 1680px;
+    width: 95vw;
+    margin: 0 auto;
+}
+
+.container-fluid::-webkit-scrollbar {
+    display: none;
+}
+
+.nezha {
+    min-height: calc(100vh - 100px);
+}
+
 /* 导航部分 开始*/
 .navbar {
     min-height: 40px !important;
     margin:0 auto;
     font-size: 14px;
-}
-
-.navbar .container{
-    max-width: 95vw;
-    margin: 0 auto;
+    z-index:99999999;
 }
 
 .navbar-inverse{
@@ -46,8 +56,8 @@ body {
     word-break: break-all;
 }
 
-.navbar .node-cell-expand-label {
-    /*margin-right: 5px;*/
+.navbar .dropdown a{
+    cursor: pointer;
 }
 
 .navbar .dropdown .dropdown-toggle {
@@ -59,7 +69,7 @@ body {
     margin:0px -15px;
 }
 
-.navbar .navbar-nav>li>a {
+.navbar .navbar-nav > li > a {
     color:#f1f1f1;
 }
 
@@ -70,12 +80,10 @@ body {
 .navbar .navbar-collapse{
     max-height: 500px;
 }
-
 /* 导航部分 结束 */
 
 
 /* toolbox 开始 */
-
 .toolbox {
     position: fixed;
     bottom:20px;
@@ -116,7 +124,6 @@ body {
 .toolbox .showGoTop i.goTop {
     font-size: 1.55rem;
 }
-
 /* toolbox 结束 */
 
 
@@ -131,6 +138,10 @@ body {
     margin-bottom: 0;
     border-collapse: collapse;
     border-radius: 3px;
+}
+
+.table-responsive{
+    border: none;
 }
 
 .table th, .table td {
@@ -162,6 +173,15 @@ body {
     height: 0.7px;
 }
 
+table.monitor-detail{
+    margin:5px 0px 10px 0px;
+}
+
+tr.accordion-toggle{
+    cursor:pointer;
+}
+
+.table .network-thead-tr th,
 .table .node-group-tag th{
     font-size: 18px;
     padding-bottom:15px;
@@ -230,12 +250,26 @@ body {
     max-width: 50px;
 }
 
+.temp-detail {
+    cursor: pointer;
+}
+
+/*agent详情下拉速度*/
+.collapsing{
+    -webkit-transition-property:height,visibility;
+    -o-transition-property:height,visibility;
+    transition-property:height,visibility;
+    -webkit-transition-duration:.15s;
+    -o-transition-duration:.15s;
+    transition-duration:.15s;
+    -webkit-transition-timing-function: linear;
+    -o-transition-timing-function: linear;
+    transition-timing-function: linear
+}
 /*正文结束*/
 
 /* 服务页 正文*/
-.service-status {
-
-}
+.service-status {}
 
 .service-status .service-status-th{
     min-width:60px;
@@ -281,50 +315,163 @@ body {
 .service-status .tooltip-inner {
     max-width: 500px;
 }
+
+td.ping-network-quality {
+    width: 600px;
+}
 /* 服务页 正文结束 */
 
-
-/* 服务器分布图 */
-#mapChartBox{
-    z-index: 999999999;
+/* 网络页 正文*/
+.network-box .btn-group.open .dropdown-toggle{
+    box-shadow:unset;
 }
 
-.modal-content{
+.network-box .network-box-header{
+    font-size: 18px;
+    padding: 5px 0px 15px 5px;
+    cursor: pointer;
+    width: 100%;
+}
+
+.network-box .network-box-header .dropdown-menu {
+    max-height: 22.5em;
+    overflow-y: auto;
+    z-index:99999998;
+    min-width: 200px;
+    padding: 0px;
+}
+
+.network-box .network-box-header .dropdown-menu::-webkit-scrollbar {
+    display: none;
+}
+
+.network-box .network-box-header .dropdown-menu li{
+    height: 2em;
+    cursor: pointer;
+}
+
+.network-box .network-box-header .dropdown-menu li.input-group{
+    margin: 0 auto;
     display: flex;
-    flex-direction: column;
-    pointer-events: auto;
+    position: sticky;
+    top: 0;
+    z-index: 99999997;
+}
+
+.network-box .network-box-header .dropdown-menu li.input-group input{
+    width: 100%;
+    height: 2em;
+    border-top: none;
+    border-left: none;
+    border-right: none;
+}
+
+.network-box .network-box-header .dropdown-menu li a {
+    padding: 5px 5px 5px 15px;
+}
+
+.network-box .network-box-header .dropdown-menu li.hidden {
+    height: 0;
+    display: none;
+    visibility:hidden;
+}
+
+.network-box .network-box-header .dropdown-menu li.visible {
+    display: block;
+}
+
+.network-box .chartTitle {
+    text-align: center;
+    font-size: 18px;
+    margin: 18px 0px 15px 0px;
+}
+
+.network-box .chartTitle i.chartCountryCode{
+    font-size: 16px;
+    border-radius: 12.5%;
+}
+
+/* 网络页 正文结束 */
+
+/* 地图版服务器分布图 */
+#mapChartBox{
+    z-index: 999999999;
+    padding-left: 0 !important;
+}
+
+.modal-open .modal{
+    overflow-x: hidden;
+    overflow-y: hidden;
 }
 
 .modal-dialog-centered{
     margin: 0 auto;
-    width: 1134px;
-    max-width: 1134px;
+    width: 100%;
+    max-width: 100%;
     display: flex;
     align-items: center; /* 垂直居中 */
     justify-content: center; /* 水平居中 */
     min-height: calc(100%) /* 确保模态框占据整个视口高度 */
 }
 
+.modal-content{
+    display: flex;
+    flex-direction: column;
+    pointer-events: auto;
+    border-radius: unset;
+    border: none;
+}
+
 .modal-header{
     position: relative;
 }
 
-.modal-header i{
+.modal-header h4{
+    cursor: pointer;
+}
+
+.modal-header i.xclose{
     cursor: pointer;
     position: absolute;
-    font-size: 2em;
-    top: 13px;
-    right: 13px;
+    font-size: 30px;
+    top: 12px;
+    right: 10px;
+}
+
+.modal-body{
+    padding: 0px;
+}
+
+a.template-item, a.cdn-item{
+    display: block;
+}
+
+footer{
+    padding-bottom: 20px;
+}
+
+footer p{
+    text-align: center;
+    font-size: 10px;
 }
 
 @media only screen and (max-width: 1200px) {
     .accordian-body{
         margin: 5px 0px 5px 10px;        
     }
+    table.monitor-detail{
+        margin:0px 0px 2px 0px;
+    }
+    .table .network-thead-tr th,
     .table .node-group-tag th{
         font-size:16px;
         padding-bottom:6px;
     }
+}
+
+/* 彩虹旗 */
+.fi-rb {
+    background-image: url(/static/theme-server-status/img/rb.png);
 }
 
 @media only screen and (max-width: 767px) {
@@ -332,9 +479,18 @@ body {
         font-size: 10px !important;
         padding-top:60px !important;
     }
+    .nezha {
+        min-height: calc(74.5vh);
+    }
     .content {
         padding: 0;
         margin-bottom: 10px;
+    }
+    footer{
+        padding-bottom: 10px;
+    }
+    .cycle-transfer-stats .dataTables_wrapper{
+        margin-bottom: -10px;
     }
     .navbar .navbar-nav .open .dropdown-menu>li>a {
         color: #f1f1f1;
@@ -370,9 +526,16 @@ body {
     .accordian-body{
         margin: 5px 0px 5px 10px;        
     }
+    table.monitor-detail{
+        margin:0px 0px 2px 0px;
+    }
+    .table .network-thead-tr th,
     .table .node-group-tag th{
-        font-size:16px;
+        font-size:14px;
         padding-bottom:6px;
+    }
+    .table tr.network td{
+        font-size: 12px;
     }
     .service-status .service-status-th{
         min-width:30px;
@@ -397,15 +560,20 @@ body {
     .toolbox {
         right: 18px;
     }
-    .modal-dialog-centered{
-        width: 95%;
+    td.ping-network-quality {
+        width: 110px;
     }
-    .modal-title{
-        line-height: 0.5;
+    .network-box .network-box-header {
+        margin: 8px 0px 0px 8px;
+        font-size: 16px;
     }
-    .modal-header i{
-        top: 8px;
-        right: 8px;
+    .network-box .chartTitle {
+        font-size: 16px;
+        margin: 10px 0px 10px 0px;
+    }
+    .network-box .chartTitle i.chartCountryCode{
+        font-size: 15px;
+        border-radius: 12.5%;
     }
 }
 

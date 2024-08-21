@@ -19,7 +19,7 @@
                 </button>
             </div>
         </div>
-        <table class="ui very basic table">
+        <table class="ui basic table">
             <thead>
                 <tr>
                     <th><button onclick="checkAllServer()" class="ui mini nezha-primary-btn button">{{tr "SelectAll"}}</button></th>
@@ -60,7 +60,7 @@
                     </td>
                     <td>
                         <button class="ui icon green mini button"
-                            data-clipboard-text="{{if $.Conf.GRPCHost}}{{if eq $.Conf.Language "zh-CN"}}curl -L https://raw.githubusercontent.com/naiba/nezha/master/script/install.sh{{else}}curl -L https://raw.githubusercontent.com/naiba/nezha/master/script/install_en.sh{{end}} -o nezha.sh && chmod +x nezha.sh && sudo ./nezha.sh install_agent {{$.Conf.GRPCHost}} {{if $.Conf.ProxyGRPCPort}}{{$.Conf.ProxyGRPCPort}}{{else}}{{$.Conf.GRPCPort}}{{end}} {{$server.Secret}}{{if $.Conf.TLS}} --tls{{end}}{{else}}{{tr "NoDomainAlert"}}{{end}}"
+                            data-clipboard-text="{{if $.Conf.GRPCHost}}{{if eq $.Conf.Language "zh-CN"}}curl -L https://raw.githubusercontent.com/naiba/nezha/master/script/install.sh{{else}}curl -L https://raw.githubusercontent.com/naiba/nezha/master/script/install_en.sh{{end}} -o nezha.sh && chmod +x nezha.sh && ./nezha.sh install_agent {{$.Conf.GRPCHost}} {{if $.Conf.ProxyGRPCPort}}{{$.Conf.ProxyGRPCPort}}{{else}}{{$.Conf.GRPCPort}}{{end}} {{$server.Secret}}{{if $.Conf.TLS}} --tls{{end}}{{else}}{{tr "NoDomainAlert"}}{{end}}"
                             data-tooltip="{{tr "ClickToCopy"}}">
                             <i class="linux icon"></i>
                         </button>
@@ -68,6 +68,11 @@
                             data-clipboard-text="{{if $.Conf.GRPCHost}}[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Ssl3 -bor [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12;set-ExecutionPolicy RemoteSigned;Invoke-WebRequest https://raw.githubusercontent.com/naiba/nezha/master/script/install.ps1 -OutFile C:\install.ps1;powershell.exe C:\install.ps1 {{$.Conf.GRPCHost}}:{{if $.Conf.ProxyGRPCPort}}{{$.Conf.ProxyGRPCPort}}{{else}}{{$.Conf.GRPCPort}}{{end}} {{$server.Secret}}{{if $.Conf.TLS}} --tls{{end}}{{else}}{{tr "NoDomainAlert"}}{{end}}"
                             data-tooltip="{{tr "ClickToCopy"}}">
                             <i class="windows icon"></i>
+                        </button>
+                        <button class="ui icon green mini button"
+                            data-clipboard-text="{{if $.Conf.GRPCHost}}curl -L https://raw.githubusercontent.com/naiba/nezha/master/script/install.command -o nezha.command && chmod +x nezha.command && sudo ./nezha.command install_agent {{$.Conf.GRPCHost}} {{if $.Conf.ProxyGRPCPort}}{{$.Conf.ProxyGRPCPort}}{{else}}{{$.Conf.GRPCPort}}{{end}} {{$server.Secret}}{{if $.Conf.TLS}} --tls{{end}}{{else}}{{tr "NoDomainAlert"}}{{end}}"
+                            data-tooltip="{{tr "ClickToCopy"}}">
+                            <i class="apple icon"></i>
                         </button>
                     </td>
                     <td style="word-break: break-word;white-space: pre-wrap;">{{$server.Note}}</td>
@@ -93,7 +98,7 @@
 </div>
 {{template "component/server" .}}
 {{template "common/footer" .}}
-<script src="https://lf6-cdn-tos.bytecdntp.com/cdn/expire-1-y/clipboard.js/2.0.10/clipboard.min.js" type="application/javascript"></script>
+<script src="https://unpkg.com/clipboard@2.0.11/dist/clipboard.min.js"></script>
 <script>
     var clipboard = new ClipboardJS('.ui.icon.green.mini.button');
     const checkBoxList = document.querySelectorAll('tbody > tr > td > input.nezha-servers[type=checkbox]')

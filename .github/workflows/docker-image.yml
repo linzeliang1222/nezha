@@ -5,7 +5,7 @@ on:
     types: [published]
   push:
     tags:
-      - 'v*' # Push events to matching v*, i.e. v1.0, v20.15.10
+      - "v*"
   workflow_dispatch:
 
 jobs:
@@ -14,17 +14,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+
       - name: Extract branch name
-        id: extract_branch
         run: |
           export TAG_NAME=$(echo ${GITHUB_REF#refs/tags/})
           echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+        id: extract_branch
 
       - name: xgo build
         uses: crazy-max/ghaction-xgo@v2
         with:
           xgo_version: latest
-          go_version: 1.20.x
+          go_version: 1.21.x
           dest: dist
           pkg: cmd/dashboard
           prefix: dashboard
@@ -32,11 +33,13 @@ jobs:
           v: true
           x: false
           race: false
+          tags: timetzdata
           ldflags: -s -w --extldflags '-static -fpic' -X github.com/naiba/nezha/service/singleton.Version=${{ steps.extract_branch.outputs.tag }}
           buildmode: default
 
       - name: fix dist
         run: |
+          ls -al dist/
           mv dist/dashboard-linux-arm-7 dist/dashboard-linux-arm
 
       - name: Log in to the GHCR
@@ -49,6 +52,7 @@ jobs:
       - name: Login to Docker Hub
         uses: docker/login-action@v2
         with:
+          registry: docker.io
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
@@ -59,12 +63,12 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Set up image name
-        id: image-name
         run: |
           GHRC_IMAGE_NAME=$(echo "ghcr.io/${{ github.repository_owner }}/nezha-dashboard" | tr '[:upper:]' '[:lower:]')
           DOCKERHUB_IMAGE_NAME=$(echo "${{ secrets.DOCKERHUB_USERNAME }}/nezha-dashboard" | tr '[:upper:]' '[:lower:]')
           echo "::set-output name=GHRC_IMAGE_NAME::$GHRC_IMAGE_NAME"
           echo "::set-output name=DOCKERHUB_IMAGE_NAME::$DOCKERHUB_IMAGE_NAME"
+        id: image-name
 
       - name: Build dasbboard image And Push
         uses: docker/build-push-action@v5

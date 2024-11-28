@@ -17,8 +17,8 @@ type testSt struct {
 	url               string
 	body              string
 	header            string
-	reqType           int
-	reqMethod         int
+	reqType           uint8
+	reqMethod         uint8
 	expectURL         string
 	expectBody        string
 	expectMethod      string
@@ -37,8 +37,6 @@ func execCase(t *testing.T, item testSt) {
 	server := Server{
 		Common:       Common{},
 		Name:         "ServerName",
-		Tag:          "",
-		Secret:       "",
 		Note:         "",
 		DisplayIndex: 0,
 		Host: &Host{
@@ -51,8 +49,6 @@ func execCase(t *testing.T, item testSt) {
 			Arch:            "",
 			Virtualization:  "",
 			BootTime:        0,
-			IP:              "1.1.1.1",
-			CountryCode:     "",
 			Version:         "",
 		},
 		State: &HostState{
@@ -71,6 +67,12 @@ func execCase(t *testing.T, item testSt) {
 			TcpConnCount:   0,
 			UdpConnCount:   0,
 			ProcessCount:   0,
+		},
+		GeoIP: &GeoIP{
+			IP: IP{
+				IPv4Addr: "1.1.1.1",
+			},
+			CountryCode: "",
 		},
 		LastActive:              time.Time{},
 		TaskClose:               nil,

@@ -1,314 +1,232 @@
 package controller
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
-	"html/template"
-	"io/fs"
 	"log"
 	"net/http"
 	"os"
-	"strconv"
+	"path/filepath"
 	"strings"
-	"time"
 
-	"code.cloudfoundry.org/bytefmt"
+	jwt "github.com/appleboy/gin-jwt/v2"
 	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
-	"github.com/hashicorp/go-uuid"
-	"github.com/nicksnyder/go-i18n/v2/i18n"
+	swaggerfiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
 
-	"github.com/naiba/nezha/model"
-	"github.com/naiba/nezha/pkg/mygin"
-	"github.com/naiba/nezha/pkg/utils"
-	"github.com/naiba/nezha/proto"
-	"github.com/naiba/nezha/resource"
-	"github.com/naiba/nezha/service/rpc"
-	"github.com/naiba/nezha/service/singleton"
+	"github.com/nezhahq/nezha/cmd/dashboard/controller/waf"
+	docs "github.com/nezhahq/nezha/cmd/dashboard/docs"
+	"github.com/nezhahq/nezha/model"
+	"github.com/nezhahq/nezha/service/singleton"
 )
 
-func ServeWeb(port uint) *http.Server {
+func ServeWeb() http.Handler {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
+
 	if singleton.Conf.Debug {
 		gin.SetMode(gin.DebugMode)
 		pprof.Register(r)
 	}
-	r.Use(natGateway)
-	if os.Getenv("NZ_LOCAL_TEMPLATE") == "true" {
-		r.SetFuncMap(funcMap)
-		r.Use(mygin.RecordPath)
-		r.Static("/static", "resource/static")
-		r.LoadHTMLGlob("resource/template/**/*.html")
-	} else {
-		tmpl := template.New("").Funcs(funcMap)
-		var err error
-		tmpl, err = tmpl.ParseFS(resource.TemplateFS, "template/**/*.html")
-		if err != nil {
-			panic(err)
-		}
-		tmpl = loadThirdPartyTemplates(tmpl)
-		r.SetHTMLTemplate(tmpl)
-		r.Use(mygin.RecordPath)
-		staticFs, err := fs.Sub(resource.StaticFS, "static")
-		if err != nil {
-			panic(err)
-		}
-		r.StaticFS("/static", http.FS(staticFs))
+	if singleton.Conf.Debug {
+		log.Printf("NEZHA>> Swagger(%s) UI available at http://localhost:%d/swagger/index.html", docs.SwaggerInfo.Version, singleton.Conf.ListenPort)
+		r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
 	}
-	r.Static("/static-custom", "resource/static/custom")
-	routers(r)
-	page404 := func(c *gin.Context) {
-		mygin.ShowErrorPage(c, mygin.ErrInfo{
-			Code:  http.StatusNotFound,
-			Title: "该页面不存在",
-			Msg:   "该页面内容可能已着陆火星",
-			Link:  "/",
-			Btn:   "返回首页",
-		}, true)
-	}
-	r.NoRoute(page404)
-	r.NoMethod(page404)
 
-	srv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", port),
-		ReadHeaderTimeout: time.Second * 5,
-		Handler:           r,
-	}
-	return srv
+	r.Use(waf.RealIp)
+	r.Use(waf.Waf)
+	r.Use(recordPath)
+	routers(r)
+
+	return r
 }
 
 func routers(r *gin.Engine) {
-	// 通用页面
-	cp := commonPage{r: r}
-	cp.serve()
-	// 游客页面
-	gp := guestPage{r}
-	gp.serve()
-	// 会员页面
-	mp := &memberPage{r}
-	mp.serve()
-	// API
-	api := r.Group("api")
-	{
-		ma := &memberAPI{api}
-		ma.serve()
-	}
-}
-
-func loadThirdPartyTemplates(tmpl *template.Template) *template.Template {
-	var ret = tmpl
-	themes, err := os.ReadDir("resource/template")
+	authMiddleware, err := jwt.New(initParams())
 	if err != nil {
-		log.Printf("NEZHA>> Error reading themes folder: %v", err)
-		return ret
+		log.Fatal("JWT Error:" + err.Error())
 	}
-	for _, theme := range themes {
-		if !theme.IsDir() {
-			continue
-		}
-		// load templates
-		t, err := ret.ParseGlob(fmt.Sprintf("resource/template/%s/*.html", theme.Name()))
-		if err != nil {
-			log.Printf("NEZHA>> Error parsing templates %s error: %v", theme.Name(), err)
-			continue
-		}
-		ret = t
+	if err := authMiddleware.MiddlewareInit(); err != nil {
+		log.Fatal("authMiddleware.MiddlewareInit Error:" + err.Error())
 	}
-	return ret
+	api := r.Group("api/v1")
+	api.POST("/login", authMiddleware.LoginHandler)
+
+	optionalAuth := api.Group("", optionalAuthMiddleware(authMiddleware))
+	optionalAuth.GET("/ws/server", commonHandler(serverStream))
+	optionalAuth.GET("/server-group", commonHandler(listServerGroup))
+
+	optionalAuth.GET("/service", commonHandler(listService))
+	optionalAuth.GET("/service/:id", commonHandler(listServiceHistory))
+	optionalAuth.GET("/service/server", commonHandler(listServerWithServices))
+
+	optionalAuth.GET("/setting", commonHandler(listConfig))
+
+	auth := api.Group("", authMiddleware.MiddlewareFunc())
+
+	auth.GET("/refresh-token", authMiddleware.RefreshHandler)
+
+	auth.POST("/terminal", commonHandler(createTerminal))
+	auth.GET("/ws/terminal/:id", commonHandler(terminalStream))
+
+	auth.GET("/file", commonHandler(createFM))
+	auth.GET("/ws/file/:id", commonHandler(fmStream))
+
+	auth.GET("/profile", commonHandler(getProfile))
+	auth.POST("/profile", commonHandler(updateProfile))
+	auth.GET("/user", commonHandler(listUser))
+	auth.POST("/user", commonHandler(createUser))
+	auth.POST("/batch-delete/user", commonHandler(batchDeleteUser))
+
+	auth.POST("/service", commonHandler(createService))
+	auth.PATCH("/service/:id", commonHandler(updateService))
+	auth.POST("/batch-delete/service", commonHandler(batchDeleteService))
+
+	auth.POST("/server-group", commonHandler(createServerGroup))
+	auth.PATCH("/server-group/:id", commonHandler(updateServerGroup))
+	auth.POST("/batch-delete/server-group", commonHandler(batchDeleteServerGroup))
+
+	auth.GET("/notification-group", commonHandler(listNotificationGroup))
+	auth.POST("/notification-group", commonHandler(createNotificationGroup))
+	auth.PATCH("/notification-group/:id", commonHandler(updateNotificationGroup))
+	auth.POST("/batch-delete/notification-group", commonHandler(batchDeleteNotificationGroup))
+
+	auth.GET("/server", commonHandler(listServer))
+	auth.PATCH("/server/:id", commonHandler(updateServer))
+	auth.POST("/batch-delete/server", commonHandler(batchDeleteServer))
+	auth.POST("/force-update/server", commonHandler(forceUpdateServer))
+
+	auth.GET("/notification", commonHandler(listNotification))
+	auth.POST("/notification", commonHandler(createNotification))
+	auth.PATCH("/notification/:id", commonHandler(updateNotification))
+	auth.POST("/batch-delete/notification", commonHandler(batchDeleteNotification))
+
+	auth.GET("/alert-rule", commonHandler(listAlertRule))
+	auth.POST("/alert-rule", commonHandler(createAlertRule))
+	auth.PATCH("/alert-rule/:id", commonHandler(updateAlertRule))
+	auth.POST("/batch-delete/alert-rule", commonHandler(batchDeleteAlertRule))
+
+	auth.GET("/cron", commonHandler(listCron))
+	auth.POST("/cron", commonHandler(createCron))
+	auth.PATCH("/cron/:id", commonHandler(updateCron))
+	auth.GET("/cron/:id/manual", commonHandler(manualTriggerCron))
+	auth.POST("/batch-delete/cron", commonHandler(batchDeleteCron))
+
+	auth.GET("/ddns", commonHandler(listDDNS))
+	auth.GET("/ddns/providers", commonHandler(listProviders))
+	auth.POST("/ddns", commonHandler(createDDNS))
+	auth.PATCH("/ddns/:id", commonHandler(updateDDNS))
+	auth.POST("/batch-delete/ddns", commonHandler(batchDeleteDDNS))
+
+	auth.GET("/nat", commonHandler(listNAT))
+	auth.POST("/nat", commonHandler(createNAT))
+	auth.PATCH("/nat/:id", commonHandler(updateNAT))
+	auth.POST("/batch-delete/nat", commonHandler(batchDeleteNAT))
+
+	auth.GET("/waf", commonHandler(listBlockedAddress))
+	auth.POST("/batch-delete/waf", commonHandler(batchDeleteBlockedAddress))
+
+	auth.PATCH("/setting", commonHandler(updateConfig))
+
+	r.NoRoute(fallbackToFrontend)
 }
 
-var funcMap = template.FuncMap{
-	"tr": func(id string, dataAndCount ...interface{}) string {
-		conf := i18n.LocalizeConfig{
-			MessageID: id,
+func recordPath(c *gin.Context) {
+	url := c.Request.URL.String()
+	for _, p := range c.Params {
+		url = strings.Replace(url, p.Value, ":"+p.Key, 1)
+	}
+	c.Set("MatchedPath", url)
+}
+
+func newErrorResponse(err error) model.CommonResponse[any] {
+	return model.CommonResponse[any]{
+		Success: false,
+		Error:   err.Error(),
+	}
+}
+
+type handlerFunc[T any] func(c *gin.Context) (T, error)
+
+// There are many error types in gorm, so create a custom type to represent all
+// gorm errors here instead
+type gormError struct {
+	msg string
+	a   []interface{}
+}
+
+func newGormError(format string, args ...interface{}) error {
+	return &gormError{
+		msg: format,
+		a:   args,
+	}
+}
+
+func (ge *gormError) Error() string {
+	return fmt.Sprintf(ge.msg, ge.a...)
+}
+
+type wsError struct {
+	msg string
+	a   []interface{}
+}
+
+func newWsError(format string, args ...interface{}) error {
+	return &wsError{
+		msg: format,
+		a:   args,
+	}
+}
+
+func (we *wsError) Error() string {
+	return fmt.Sprintf(we.msg, we.a...)
+}
+
+func commonHandler[T any](handler handlerFunc[T]) func(*gin.Context) {
+	return func(c *gin.Context) {
+		data, err := handler(c)
+		if err == nil {
+			c.JSON(http.StatusOK, model.CommonResponse[T]{Success: true, Data: data})
+			return
 		}
-		if len(dataAndCount) > 0 {
-			conf.TemplateData = dataAndCount[0]
-		}
-		if len(dataAndCount) > 1 {
-			conf.PluralCount = dataAndCount[1]
-		}
-		return singleton.Localizer.MustLocalize(&conf)
-	},
-	"toValMap": func(val interface{}) map[string]interface{} {
-		return map[string]interface{}{
-			"Value": val,
-		}
-	},
-	"tf": func(t time.Time) string {
-		return t.In(singleton.Loc).Format("01/02/2006 15:04:05")
-	},
-	"len": func(slice []interface{}) string {
-		return strconv.Itoa(len(slice))
-	},
-	"safe": func(s string) template.HTML {
-		return template.HTML(s) // #nosec
-	},
-	"tag": func(s string) template.HTML {
-		return template.HTML(`<` + s + `>`) // #nosec
-	},
-	"stf": func(s uint64) string {
-		return time.Unix(int64(s), 0).In(singleton.Loc).Format("01/02/2006 15:04")
-	},
-	"sf": func(duration uint64) string {
-		return time.Duration(time.Duration(duration) * time.Second).String()
-	},
-	"sft": func(future time.Time) string {
-		return time.Until(future).Round(time.Second).String()
-	},
-	"bf": func(b uint64) string {
-		return bytefmt.ByteSize(b)
-	},
-	"ts": func(s string) string {
-		return strings.TrimSpace(s)
-	},
-	"float32f": func(f float32) string {
-		return fmt.Sprintf("%.3f", f)
-	},
-	"divU64": func(a, b uint64) float32 {
-		if b == 0 {
-			if a > 0 {
-				return 100
+		switch err.(type) {
+		case *gormError:
+			log.Printf("NEZHA>> gorm error: %v", err)
+			c.JSON(http.StatusOK, newErrorResponse(singleton.Localizer.ErrorT("database error")))
+			return
+		case *wsError:
+			// Connection is upgraded to WebSocket, so c.Writer is no longer usable
+			if msg := err.Error(); msg != "" {
+				log.Printf("NEZHA>> websocket error: %v", err)
 			}
-			return 0
+			return
+		default:
+			c.JSON(http.StatusOK, newErrorResponse(err))
+			return
 		}
-		if a == 0 {
-			// 这是从未在线的情况
-			return 0.00001 / float32(b) * 100
-		}
-		return float32(a) / float32(b) * 100
-	},
-	"div": func(a, b int) float32 {
-		if b == 0 {
-			if a > 0 {
-				return 100
-			}
-			return 0
-		}
-		if a == 0 {
-			// 这是从未在线的情况
-			return 0.00001 / float32(b) * 100
-		}
-		return float32(a) / float32(b) * 100
-	},
-	"addU64": func(a, b uint64) uint64 {
-		return a + b
-	},
-	"add": func(a, b int) int {
-		return a + b
-	},
-	"TransLeftPercent": func(a, b float64) (n float64) {
-		n, _ = strconv.ParseFloat(fmt.Sprintf("%.2f", (100-(a/b)*100)), 64)
-		if n < 0 {
-			n = 0
-		}
-		return
-	},
-	"TransLeft": func(a, b uint64) string {
-		if a < b {
-			return "0B"
-		}
-		return bytefmt.ByteSize(a - b)
-	},
-	"TransClassName": func(a float64) string {
-		if a == 0 {
-			return "offline"
-		}
-		if a > 50 {
-			return "fine"
-		}
-		if a > 20 {
-			return "warning"
-		}
-		if a > 0 {
-			return "error"
-		}
-		return "offline"
-	},
-	"UintToFloat": func(a uint64) (n float64) {
-		n, _ = strconv.ParseFloat((strconv.FormatUint(a, 10)), 64)
-		return
-	},
-	"dayBefore": func(i int) string {
-		year, month, day := time.Now().Date()
-		today := time.Date(year, month, day, 0, 0, 0, 0, singleton.Loc)
-		return today.AddDate(0, 0, i-29).Format("01/02")
-	},
-	"className": func(percent float32) string {
-		if percent == 0 {
-			return ""
-		}
-		if percent > 95 {
-			return "good"
-		}
-		if percent > 80 {
-			return "warning"
-		}
-		return "danger"
-	},
-	"statusName": func(val float32) string {
-		return singleton.StatusCodeToString(singleton.GetStatusCode(val))
-	},
+	}
 }
 
-func natGateway(c *gin.Context) {
-	natConfig := singleton.GetNATConfigByDomain(c.Request.Host)
-	if natConfig == nil {
+func fallbackToFrontend(c *gin.Context) {
+	if strings.HasPrefix(c.Request.URL.Path, "/api") {
+		c.JSON(http.StatusOK, newErrorResponse(errors.New("404 Not Found")))
 		return
 	}
-
-	singleton.ServerLock.RLock()
-	server := singleton.ServerList[natConfig.ServerID]
-	singleton.ServerLock.RUnlock()
-	if server == nil || server.TaskStream == nil {
-		c.Writer.WriteString("server not found or not connected")
-		c.Abort()
+	if strings.HasPrefix(c.Request.URL.Path, "/dashboard") {
+		stripPath := strings.TrimPrefix(c.Request.URL.Path, "/dashboard")
+		localFilePath := filepath.Join("./admin-dist", stripPath)
+		if _, err := os.Stat(localFilePath); err == nil {
+			c.File(localFilePath)
+			return
+		}
+		c.File("admin-dist/index.html")
 		return
 	}
-
-	streamId, err := uuid.GenerateUUID()
-	if err != nil {
-		c.Writer.WriteString(fmt.Sprintf("stream id error: %v", err))
-		c.Abort()
+	localFilePath := filepath.Join("user-dist", c.Request.URL.Path)
+	if _, err := os.Stat(localFilePath); err == nil {
+		c.File(localFilePath)
 		return
 	}
-
-	rpc.NezhaHandlerSingleton.CreateStream(streamId)
-	defer rpc.NezhaHandlerSingleton.CloseStream(streamId)
-
-	taskData, err := json.Marshal(model.TaskNAT{
-		StreamID: streamId,
-		Host:     natConfig.Host,
-	})
-	if err != nil {
-		c.Writer.WriteString(fmt.Sprintf("task data error: %v", err))
-		c.Abort()
-		return
-	}
-
-	if err := server.TaskStream.Send(&proto.Task{
-		Type: model.TaskTypeNAT,
-		Data: string(taskData),
-	}); err != nil {
-		c.Writer.WriteString(fmt.Sprintf("send task error: %v", err))
-		c.Abort()
-		return
-	}
-
-	w, err := utils.NewRequestWrapper(c.Request, c.Writer)
-	if err != nil {
-		c.Writer.WriteString(fmt.Sprintf("request wrapper error: %v", err))
-		c.Abort()
-		return
-	}
-
-	if err := rpc.NezhaHandlerSingleton.UserConnected(streamId, w); err != nil {
-		c.Writer.WriteString(fmt.Sprintf("user connected error: %v", err))
-		c.Abort()
-		return
-	}
-
-	rpc.NezhaHandlerSingleton.StartStream(streamId, time.Second*10)
-	c.Abort()
+	c.File("user-dist/index.html")
 }

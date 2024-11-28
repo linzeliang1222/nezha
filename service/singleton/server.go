@@ -4,25 +4,22 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/naiba/nezha/model"
+	"github.com/nezhahq/nezha/model"
 )
 
 var (
-	ServerList        map[uint64]*model.Server // [ServerID] -> model.Server
-	SecretToID        map[string]uint64        // [ServerSecret] -> ServerID
-	ServerTagToIDList map[string][]uint64      // [ServerTag] -> ServerID
-	ServerLock        sync.RWMutex
+	ServerList     map[uint64]*model.Server // [ServerID] -> model.Server
+	ServerUUIDToID map[string]uint64        // [ServerUUID] -> ServerID
+	ServerLock     sync.RWMutex
 
 	SortedServerList         []*model.Server // 用于存储服务器列表的 slice，按照服务器 ID 排序
 	SortedServerListForGuest []*model.Server
 	SortedServerLock         sync.RWMutex
 )
 
-// InitServer 初始化 ServerID <-> Secret 的映射
 func InitServer() {
 	ServerList = make(map[uint64]*model.Server)
-	SecretToID = make(map[string]uint64)
-	ServerTagToIDList = make(map[string][]uint64)
+	ServerUUIDToID = make(map[string]uint64)
 }
 
 // loadServers 加载服务器列表并根据ID排序
@@ -36,8 +33,7 @@ func loadServers() {
 		innerS.State = &model.HostState{}
 		innerS.TaskCloseLock = new(sync.Mutex)
 		ServerList[innerS.ID] = &innerS
-		SecretToID[innerS.Secret] = innerS.ID
-		ServerTagToIDList[innerS.Tag] = append(ServerTagToIDList[innerS.Tag], innerS.ID)
+		ServerUUIDToID[innerS.UUID] = innerS.ID
 	}
 	ReSortServer()
 }
@@ -49,8 +45,8 @@ func ReSortServer() {
 	SortedServerLock.Lock()
 	defer SortedServerLock.Unlock()
 
-	SortedServerList = []*model.Server{}
-	SortedServerListForGuest = []*model.Server{}
+	SortedServerList = make([]*model.Server, 0, len(ServerList))
+	SortedServerListForGuest = make([]*model.Server, 0)
 	for _, s := range ServerList {
 		SortedServerList = append(SortedServerList, s)
 		if !s.HideForGuest {
@@ -72,4 +68,14 @@ func ReSortServer() {
 		}
 		return SortedServerListForGuest[i].DisplayIndex > SortedServerListForGuest[j].DisplayIndex
 	})
+}
+
+func OnServerDelete(sid []uint64) {
+	ServerLock.Lock()
+	defer ServerLock.Unlock()
+	for _, id := range sid {
+		serverUUID := ServerList[id].UUID
+		delete(ServerUUIDToID, serverUUID)
+		delete(ServerList, id)
+	}
 }

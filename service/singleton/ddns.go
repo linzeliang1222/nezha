@@ -2,87 +2,101 @@ package singleton
 
 import (
 	"fmt"
-	"log"
+	"slices"
+	"sync"
 
-	ddns2 "github.com/naiba/nezha/pkg/ddns"
+	"github.com/libdns/cloudflare"
+	tencentcloud "github.com/nezhahq/libdns-tencentcloud"
+
+	"github.com/nezhahq/nezha/model"
+	ddns2 "github.com/nezhahq/nezha/pkg/ddns"
+	"github.com/nezhahq/nezha/pkg/ddns/dummy"
+	"github.com/nezhahq/nezha/pkg/ddns/webhook"
+	"github.com/nezhahq/nezha/pkg/utils"
 )
 
-func RetryableUpdateDomain(provider ddns2.Provider, config *ddns2.DomainConfig, maxRetries int) bool {
-	if nil == config {
-		return false
+var (
+	DDNSCache     map[uint64]*model.DDNSProfile
+	DDNSCacheLock sync.RWMutex
+	DDNSList      []*model.DDNSProfile
+)
+
+func initDDNS() {
+	DB.Find(&DDNSList)
+	DDNSCacheLock.Lock()
+	DDNSCache = make(map[uint64]*model.DDNSProfile)
+	for i := 0; i < len(DDNSList); i++ {
+		DDNSCache[DDNSList[i].ID] = DDNSList[i]
 	}
-	for retries := 0; retries < maxRetries; retries++ {
-		log.Printf("NEZHA>> 正在尝试更新域名(%s)DDNS(%d/%d)\n", config.FullDomain, retries+1, maxRetries)
-		if provider.UpdateDomain(config) {
-			log.Printf("NEZHA>> 尝试更新域名(%s)DDNS成功\n", config.FullDomain)
-			return true
+	DDNSCacheLock.Unlock()
+
+	OnNameserverUpdate()
+}
+
+func OnDDNSUpdate(p *model.DDNSProfile) {
+	DDNSCacheLock.Lock()
+	defer DDNSCacheLock.Unlock()
+	DDNSCache[p.ID] = p
+}
+
+func OnDDNSDelete(id []uint64) {
+	DDNSCacheLock.Lock()
+	defer DDNSCacheLock.Unlock()
+
+	for _, i := range id {
+		delete(DDNSCache, i)
+	}
+}
+
+func UpdateDDNSList() {
+	DDNSCacheLock.RLock()
+	defer DDNSCacheLock.RUnlock()
+
+	DDNSList = make([]*model.DDNSProfile, 0, len(DDNSCache))
+	for _, p := range DDNSCache {
+		DDNSList = append(DDNSList, p)
+	}
+	slices.SortFunc(DDNSList, func(a, b *model.DDNSProfile) int {
+		return utils.Compare(a.ID, b.ID)
+	})
+}
+
+func OnNameserverUpdate() {
+	ddns2.InitDNSServers(Conf.DNSServers)
+}
+
+func GetDDNSProvidersFromProfiles(profileId []uint64, ip *ddns2.IP) ([]*ddns2.Provider, error) {
+	profiles := make([]*model.DDNSProfile, 0, len(profileId))
+	DDNSCacheLock.RLock()
+	for _, id := range profileId {
+		if profile, ok := DDNSCache[id]; ok {
+			profiles = append(profiles, profile)
+		} else {
+			DDNSCacheLock.RUnlock()
+			return nil, fmt.Errorf("无法找到DDNS配置 ID %d", id)
 		}
 	}
-	log.Printf("NEZHA>> 尝试更新域名(%s)DDNS失败\n", config.FullDomain)
-	return false
-}
+	DDNSCacheLock.RUnlock()
 
-func GetDDNSProviderFromString(provider string) (ddns2.Provider, error) {
-	switch provider {
-	case "webhook":
-		return &ddns2.ProviderWebHook{
-			URL:           Conf.DDNS.WebhookURL,
-			RequestMethod: Conf.DDNS.WebhookMethod,
-			RequestBody:   Conf.DDNS.WebhookRequestBody,
-			RequestHeader: Conf.DDNS.WebhookHeaders,
-		}, nil
-	case "dummy":
-		return &ddns2.ProviderDummy{}, nil
-	case "cloudflare":
-		return &ddns2.ProviderCloudflare{
-			Secret: Conf.DDNS.AccessSecret,
-		}, nil
-	case "tencentcloud":
-		return &ddns2.ProviderTencentCloud{
-			SecretID:  Conf.DDNS.AccessID,
-			SecretKey: Conf.DDNS.AccessSecret,
-		}, nil
-	}
-	return &ddns2.ProviderDummy{}, fmt.Errorf("无法找到配置的DDNS提供者%s", Conf.DDNS.Provider)
-}
-
-func GetDDNSProviderFromProfile(profileName string) (ddns2.Provider, error) {
-	profile, ok := Conf.DDNS.Profiles[profileName]
-	if !ok {
-		return &ddns2.ProviderDummy{}, fmt.Errorf("未找到配置项 %s", profileName)
-	}
-
-	switch profile.Provider {
-	case "webhook":
-		return &ddns2.ProviderWebHook{
-			URL:           profile.WebhookURL,
-			RequestMethod: profile.WebhookMethod,
-			RequestBody:   profile.WebhookRequestBody,
-			RequestHeader: profile.WebhookHeaders,
-		}, nil
-	case "dummy":
-		return &ddns2.ProviderDummy{}, nil
-	case "cloudflare":
-		return &ddns2.ProviderCloudflare{
-			Secret: profile.AccessSecret,
-		}, nil
-	case "tencentcloud":
-		return &ddns2.ProviderTencentCloud{
-			SecretID:  profile.AccessID,
-			SecretKey: profile.AccessSecret,
-		}, nil
-	}
-	return &ddns2.ProviderDummy{}, fmt.Errorf("无法找到配置的DDNS提供者%s", profile.Provider)
-}
-
-func ValidateDDNSProvidersFromProfiles() error {
-	validProviders := map[string]bool{"webhook": true, "dummy": true, "cloudflare": true, "tencentcloud": true}
-	providers := make(map[string]string)
-	for profileName, profile := range Conf.DDNS.Profiles {
-		if _, ok := validProviders[profile.Provider]; !ok {
-			return fmt.Errorf("无法找到配置的DDNS提供者%s", profile.Provider)
+	providers := make([]*ddns2.Provider, 0, len(profiles))
+	for _, profile := range profiles {
+		provider := &ddns2.Provider{DDNSProfile: profile, IPAddrs: ip}
+		switch profile.Provider {
+		case model.ProviderDummy:
+			provider.Setter = &dummy.Provider{}
+			providers = append(providers, provider)
+		case model.ProviderWebHook:
+			provider.Setter = &webhook.Provider{DDNSProfile: profile}
+			providers = append(providers, provider)
+		case model.ProviderCloudflare:
+			provider.Setter = &cloudflare.Provider{APIToken: profile.AccessSecret}
+			providers = append(providers, provider)
+		case model.ProviderTencentCloud:
+			provider.Setter = &tencentcloud.Provider{SecretId: profile.AccessID, SecretKey: profile.AccessSecret}
+			providers = append(providers, provider)
+		default:
+			return nil, fmt.Errorf("无法找到配置的DDNS提供者 %s", profile.Provider)
 		}
-		providers[profileName] = profile.Provider
 	}
-	return nil
+	return providers, nil
 }

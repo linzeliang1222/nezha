@@ -7,9 +7,8 @@ import (
 	"time"
 
 	"github.com/jinzhu/copier"
-	"github.com/nicksnyder/go-i18n/v2/i18n"
 
-	"github.com/naiba/nezha/model"
+	"github.com/nezhahq/nezha/model"
 )
 
 const (
@@ -27,9 +26,9 @@ type NotificationHistory struct {
 var (
 	AlertsLock                    sync.RWMutex
 	Alerts                        []*model.AlertRule
-	alertsStore                   map[uint64]map[uint64][][]interface{} // [alert_id][server_id] -> 对应报警规则的检查结果
-	alertsPrevState               map[uint64]map[uint64]uint            // [alert_id][server_id] -> 对应报警规则的上一次报警状态
-	AlertsCycleTransferStatsStore map[uint64]*model.CycleTransferStats  // [alert_id] -> 对应报警规则的周期流量统计
+	alertsStore                   map[uint64]map[uint64][][]bool       // [alert_id][server_id] -> 对应报警规则的检查结果
+	alertsPrevState               map[uint64]map[uint64]uint8          // [alert_id][server_id] -> 对应报警规则的上一次报警状态
+	AlertsCycleTransferStatsStore map[uint64]*model.CycleTransferStats // [alert_id] -> 对应报警规则的周期流量统计
 )
 
 // addCycleTransferStatsInfo 向AlertsCycleTransferStatsStore中添加周期流量报警统计信息
@@ -60,21 +59,16 @@ func addCycleTransferStatsInfo(alert *model.AlertRule) {
 
 // AlertSentinelStart 报警器启动
 func AlertSentinelStart() {
-	alertsStore = make(map[uint64]map[uint64][][]interface{})
-	alertsPrevState = make(map[uint64]map[uint64]uint)
+	alertsStore = make(map[uint64]map[uint64][][]bool)
+	alertsPrevState = make(map[uint64]map[uint64]uint8)
 	AlertsCycleTransferStatsStore = make(map[uint64]*model.CycleTransferStats)
 	AlertsLock.Lock()
 	if err := DB.Find(&Alerts).Error; err != nil {
 		panic(err)
 	}
 	for _, alert := range Alerts {
-		// 旧版本可能不存在通知组 为其添加默认值
-		if alert.NotificationTag == "" {
-			alert.NotificationTag = "default"
-			DB.Save(alert)
-		}
-		alertsStore[alert.ID] = make(map[uint64][][]interface{})
-		alertsPrevState[alert.ID] = make(map[uint64]uint)
+		alertsStore[alert.ID] = make(map[uint64][][]bool)
+		alertsPrevState[alert.ID] = make(map[uint64]uint8)
 		addCycleTransferStatsInfo(alert)
 	}
 	AlertsLock.Unlock()
@@ -97,7 +91,7 @@ func AlertSentinelStart() {
 	}
 }
 
-func OnRefreshOrAddAlert(alert model.AlertRule) {
+func OnRefreshOrAddAlert(alert *model.AlertRule) {
 	AlertsLock.Lock()
 	defer AlertsLock.Unlock()
 	delete(alertsStore, alert.ID)
@@ -105,31 +99,34 @@ func OnRefreshOrAddAlert(alert model.AlertRule) {
 	var isEdit bool
 	for i := 0; i < len(Alerts); i++ {
 		if Alerts[i].ID == alert.ID {
-			Alerts[i] = &alert
+			Alerts[i] = alert
 			isEdit = true
 		}
 	}
 	if !isEdit {
-		Alerts = append(Alerts, &alert)
+		Alerts = append(Alerts, alert)
 	}
-	alertsStore[alert.ID] = make(map[uint64][][]interface{})
-	alertsPrevState[alert.ID] = make(map[uint64]uint)
+	alertsStore[alert.ID] = make(map[uint64][][]bool)
+	alertsPrevState[alert.ID] = make(map[uint64]uint8)
 	delete(AlertsCycleTransferStatsStore, alert.ID)
-	addCycleTransferStatsInfo(&alert)
+	addCycleTransferStatsInfo(alert)
 }
 
-func OnDeleteAlert(id uint64) {
+func OnDeleteAlert(id []uint64) {
 	AlertsLock.Lock()
 	defer AlertsLock.Unlock()
-	delete(alertsStore, id)
-	delete(alertsPrevState, id)
-	for i := 0; i < len(Alerts); i++ {
-		if Alerts[i].ID == id {
-			Alerts = append(Alerts[:i], Alerts[i+1:]...)
-			i--
+	for _, i := range id {
+		delete(alertsStore, i)
+		delete(alertsPrevState, i)
+		currentAlerts := Alerts[:0]
+		for _, alert := range Alerts {
+			if alert.ID != i {
+				currentAlerts = append(currentAlerts, alert)
+			}
 		}
+		Alerts = currentAlerts
+		delete(AlertsCycleTransferStatsStore, i)
 	}
-	delete(AlertsCycleTransferStatsStore, id)
 }
 
 // checkStatus 检查报警规则并发送报警
@@ -159,24 +156,22 @@ func checkStatus() {
 				// 始终触发模式或上次检查不为失败时触发报警（跳过单次触发+上次失败的情况）
 				if alert.TriggerMode == model.ModeAlwaysTrigger || alertsPrevState[alert.ID][server.ID] != _RuleCheckFail {
 					alertsPrevState[alert.ID][server.ID] = _RuleCheckFail
-					message := fmt.Sprintf("[%s] %s(%s) %s", Localizer.MustLocalize(&i18n.LocalizeConfig{
-						MessageID: "Incident",
-					}), server.Name, IPDesensitize(server.Host.IP), alert.Name)
+					message := fmt.Sprintf("[%s] %s(%s) %s", Localizer.T("Incident"),
+						server.Name, IPDesensitize(server.GeoIP.IP.Join()), alert.Name)
 					go SendTriggerTasks(alert.FailTriggerTasks, curServer.ID)
-					go SendNotification(alert.NotificationTag, message, NotificationMuteLabel.ServerIncident(server.ID, alert.ID), &curServer)
+					go SendNotification(alert.NotificationGroupID, message, NotificationMuteLabel.ServerIncident(server.ID, alert.ID), &curServer)
 					// 清除恢复通知的静音缓存
-					UnMuteNotification(alert.NotificationTag, NotificationMuteLabel.ServerIncidentResolved(server.ID, alert.ID))
+					UnMuteNotification(alert.NotificationGroupID, NotificationMuteLabel.ServerIncidentResolved(server.ID, alert.ID))
 				}
 			} else {
 				// 本次通过检查但上一次的状态为失败，则发送恢复通知
 				if alertsPrevState[alert.ID][server.ID] == _RuleCheckFail {
-					message := fmt.Sprintf("[%s] %s(%s) %s", Localizer.MustLocalize(&i18n.LocalizeConfig{
-						MessageID: "Resolved",
-					}), server.Name, IPDesensitize(server.Host.IP), alert.Name)
+					message := fmt.Sprintf("[%s] %s(%s) %s", Localizer.T("Resolved"),
+						server.Name, IPDesensitize(server.GeoIP.IP.Join()), alert.Name)
 					go SendTriggerTasks(alert.RecoverTriggerTasks, curServer.ID)
-					go SendNotification(alert.NotificationTag, message, NotificationMuteLabel.ServerIncidentResolved(server.ID, alert.ID), &curServer)
+					go SendNotification(alert.NotificationGroupID, message, NotificationMuteLabel.ServerIncidentResolved(server.ID, alert.ID), &curServer)
 					// 清除失败通知的静音缓存
-					UnMuteNotification(alert.NotificationTag, NotificationMuteLabel.ServerIncident(server.ID, alert.ID))
+					UnMuteNotification(alert.NotificationGroupID, NotificationMuteLabel.ServerIncident(server.ID, alert.ID))
 				}
 				alertsPrevState[alert.ID][server.ID] = _RuleCheckPass
 			}

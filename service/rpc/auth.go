@@ -2,24 +2,22 @@ package rpc
 
 import (
 	"context"
+	"strings"
+	"sync"
 
+	petname "github.com/dustinkirkland/golang-petname"
+	"github.com/hashicorp/go-uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/naiba/nezha/service/singleton"
+	"github.com/nezhahq/nezha/model"
+	"github.com/nezhahq/nezha/service/singleton"
 )
 
 type authHandler struct {
 	ClientSecret string
-}
-
-func (a *authHandler) GetRequestMetadata(ctx context.Context, uri ...string) (map[string]string, error) {
-	return map[string]string{"client_secret": a.ClientSecret}, nil
-}
-
-func (a *authHandler) RequireTransportSecurity() bool {
-	return false
+	ClientUUID   string
 }
 
 func (a *authHandler) Check(ctx context.Context) (uint64, error) {
@@ -30,18 +28,49 @@ func (a *authHandler) Check(ctx context.Context) (uint64, error) {
 
 	var clientSecret string
 	if value, ok := md["client_secret"]; ok {
-		clientSecret = value[0]
+		clientSecret = strings.TrimSpace(value[0])
+	}
+
+	if clientSecret == "" {
+		return 0, status.Error(codes.Unauthenticated, "客户端认证失败")
+	}
+
+	ip, _ := ctx.Value(model.CtxKeyRealIP{}).(string)
+
+	if clientSecret != singleton.Conf.AgentSecretKey {
+		model.BlockIP(singleton.DB, ip, model.WAFBlockReasonTypeAgentAuthFail)
+		return 0, status.Error(codes.Unauthenticated, "客户端认证失败")
+	}
+
+	model.ClearIP(singleton.DB, ip)
+
+	var clientUUID string
+	if value, ok := md["client_uuid"]; ok {
+		clientUUID = value[0]
+	}
+
+	if _, err := uuid.ParseUUID(clientUUID); err != nil {
+		return 0, status.Error(codes.Unauthenticated, "客户端 UUID 不合法")
 	}
 
 	singleton.ServerLock.RLock()
 	defer singleton.ServerLock.RUnlock()
-	clientID, hasID := singleton.SecretToID[clientSecret]
+
+	clientID, hasID := singleton.ServerUUIDToID[clientUUID]
 	if !hasID {
-		return 0, status.Errorf(codes.Unauthenticated, "客户端认证失败")
+		s := model.Server{UUID: clientUUID, Name: petname.Generate(2, "-")}
+		if err := singleton.DB.Create(&s).Error; err != nil {
+			return 0, status.Error(codes.Unauthenticated, err.Error())
+		}
+		s.Host = &model.Host{}
+		s.State = &model.HostState{}
+		s.TaskCloseLock = new(sync.Mutex)
+		// generate a random silly server name
+		singleton.ServerList[s.ID] = &s
+		singleton.ServerUUIDToID[clientUUID] = s.ID
+		singleton.ReSortServer()
+		clientID = s.ID
 	}
-	_, hasServer := singleton.ServerList[clientID]
-	if !hasServer {
-		return 0, status.Errorf(codes.Unauthenticated, "客户端认证失败")
-	}
+
 	return clientID, nil
 }

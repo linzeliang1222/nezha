@@ -5,10 +5,10 @@ import (
 	"io"
 	"sync/atomic"
 
-	"github.com/naiba/nezha/proto"
+	"github.com/nezhahq/nezha/proto"
 )
 
-var _ io.ReadWriteCloser = &IOStreamWrapper{}
+var _ io.ReadWriteCloser = (*IOStreamWrapper)(nil)
 
 type IOStream interface {
 	Recv() (*proto.IOStreamData, error)

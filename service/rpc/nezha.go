@@ -8,18 +8,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/naiba/nezha/pkg/ddns"
-	"github.com/naiba/nezha/pkg/geoip"
-	"github.com/naiba/nezha/pkg/grpcx"
-	"github.com/naiba/nezha/pkg/utils"
+	"github.com/nezhahq/nezha/pkg/ddns"
+	geoipx "github.com/nezhahq/nezha/pkg/geoip"
+	"github.com/nezhahq/nezha/pkg/grpcx"
 
 	"github.com/jinzhu/copier"
-	"github.com/nicksnyder/go-i18n/v2/i18n"
 
-	"github.com/naiba/nezha/model"
-	pb "github.com/naiba/nezha/proto"
-	"github.com/naiba/nezha/service/singleton"
+	"github.com/nezhahq/nezha/model"
+	pb "github.com/nezhahq/nezha/proto"
+	"github.com/nezhahq/nezha/service/singleton"
 )
+
+var _ pb.NezhaServiceServer = (*NezhaHandler)(nil)
 
 var NezhaHandlerSingleton *NezhaHandler
 
@@ -55,18 +55,12 @@ func (s *NezhaHandler) ReportTask(c context.Context, r *pb.TaskResult) (*pb.Rece
 			curServer := model.Server{}
 			copier.Copy(&curServer, singleton.ServerList[clientID])
 			if cr.PushSuccessful && r.GetSuccessful() {
-				singleton.SendNotification(cr.NotificationTag, fmt.Sprintf("[%s] %s, %s\n%s", singleton.Localizer.MustLocalize(
-					&i18n.LocalizeConfig{
-						MessageID: "ScheduledTaskExecutedSuccessfully",
-					},
-				), cr.Name, singleton.ServerList[clientID].Name, r.GetData()), nil, &curServer)
+				singleton.SendNotification(cr.NotificationGroupID, fmt.Sprintf("[%s] %s, %s\n%s", singleton.Localizer.T("Scheduled Task Executed Successfully"),
+					cr.Name, singleton.ServerList[clientID].Name, r.GetData()), nil, &curServer)
 			}
 			if !r.GetSuccessful() {
-				singleton.SendNotification(cr.NotificationTag, fmt.Sprintf("[%s] %s, %s\n%s", singleton.Localizer.MustLocalize(
-					&i18n.LocalizeConfig{
-						MessageID: "ScheduledTaskExecutedFailed",
-					},
-				), cr.Name, singleton.ServerList[clientID].Name, r.GetData()), nil, &curServer)
+				singleton.SendNotification(cr.NotificationGroupID, fmt.Sprintf("[%s] %s, %s\n%s", singleton.Localizer.T("Scheduled Task Executed Failed"),
+					cr.Name, singleton.ServerList[clientID].Name, r.GetData()), nil, &curServer)
 			}
 			singleton.DB.Model(cr).Updates(model.Cron{
 				LastExecutedAt: time.Now().Add(time.Second * -1 * time.Duration(r.GetDelay())),
@@ -102,30 +96,37 @@ func (s *NezhaHandler) RequestTask(h *pb.Host, stream pb.NezhaService_RequestTas
 	return <-closeCh
 }
 
-func (s *NezhaHandler) ReportSystemState(c context.Context, r *pb.State) (*pb.Receipt, error) {
-	var clientID uint64
+func (s *NezhaHandler) ReportSystemState(stream pb.NezhaService_ReportSystemStateServer) error {
 	var err error
-	if clientID, err = s.Auth.Check(c); err != nil {
-		return nil, err
+	var clientID uint64
+	if clientID, err = s.Auth.Check(stream.Context()); err != nil {
+		return err
 	}
-	state := model.PB2State(r)
-	singleton.ServerLock.RLock()
-	defer singleton.ServerLock.RUnlock()
-	singleton.ServerList[clientID].LastActive = time.Now()
-	singleton.ServerList[clientID].State = &state
+	var state *pb.State
+	for {
+		state, err = stream.Recv()
+		if err != nil {
+			log.Printf("NEZHA>> ReportSystemState eror: %v, clientID: %d\n", err, clientID)
+			return nil
+		}
+		state := model.PB2State(state)
 
-	// 应对 dashboard 重启的情况，如果从未记录过，先打点，等到小时时间点时入库
-	if singleton.ServerList[clientID].PrevTransferInSnapshot == 0 || singleton.ServerList[clientID].PrevTransferOutSnapshot == 0 {
-		singleton.ServerList[clientID].PrevTransferInSnapshot = int64(state.NetInTransfer)
-		singleton.ServerList[clientID].PrevTransferOutSnapshot = int64(state.NetOutTransfer)
+		singleton.ServerLock.RLock()
+		singleton.ServerList[clientID].LastActive = time.Now()
+		singleton.ServerList[clientID].State = &state
+		// 应对 dashboard 重启的情况，如果从未记录过，先打点，等到小时时间点时入库
+		if singleton.ServerList[clientID].PrevTransferInSnapshot == 0 || singleton.ServerList[clientID].PrevTransferOutSnapshot == 0 {
+			singleton.ServerList[clientID].PrevTransferInSnapshot = int64(state.NetInTransfer)
+			singleton.ServerList[clientID].PrevTransferOutSnapshot = int64(state.NetOutTransfer)
+		}
+		singleton.ServerLock.RUnlock()
+
+		stream.Send(&pb.Receipt{Proced: true})
 	}
-
-	return &pb.Receipt{Proced: true}, nil
 }
 
 func (s *NezhaHandler) ReportSystemInfo(c context.Context, r *pb.Host) (*pb.Receipt, error) {
 	var clientID uint64
-	var provider ddns.Provider
 	var err error
 	if clientID, err = s.Auth.Check(c); err != nil {
 		return nil, err
@@ -133,56 +134,6 @@ func (s *NezhaHandler) ReportSystemInfo(c context.Context, r *pb.Host) (*pb.Rece
 	host := model.PB2Host(r)
 	singleton.ServerLock.RLock()
 	defer singleton.ServerLock.RUnlock()
-
-	// 检查并更新DDNS
-	if singleton.Conf.DDNS.Enable &&
-		singleton.ServerList[clientID].EnableDDNS &&
-		host.IP != "" &&
-		(singleton.ServerList[clientID].Host == nil || singleton.ServerList[clientID].Host.IP != host.IP) {
-		serverDomain := singleton.ServerList[clientID].DDNSDomain
-		if singleton.Conf.DDNS.Provider == "" {
-			provider, err = singleton.GetDDNSProviderFromProfile(singleton.ServerList[clientID].DDNSProfile)
-		} else {
-			provider, err = singleton.GetDDNSProviderFromString(singleton.Conf.DDNS.Provider)
-		}
-		if err == nil && serverDomain != "" {
-			ipv4, ipv6, _ := utils.SplitIPAddr(host.IP)
-			maxRetries := int(singleton.Conf.DDNS.MaxRetries)
-			config := &ddns.DomainConfig{
-				EnableIPv4: singleton.ServerList[clientID].EnableIPv4,
-				EnableIpv6: singleton.ServerList[clientID].EnableIpv6,
-				FullDomain: serverDomain,
-				Ipv4Addr:   ipv4,
-				Ipv6Addr:   ipv6,
-			}
-			go singleton.RetryableUpdateDomain(provider, config, maxRetries)
-
-		} else {
-			// 虽然会在启动时panic, 可以断言不会走这个分支, 但是考虑到动态加载配置或者其它情况, 这里输出一下方便检查奇奇怪怪的BUG
-			log.Printf("NEZHA>> 未找到对应的DDNS配置(%s), 或者是provider填写不正确, 请前往config.yml检查你的设置\n", singleton.ServerList[clientID].DDNSProfile)
-		}
-
-	}
-
-	// 发送IP变动通知
-	if singleton.ServerList[clientID].Host != nil && singleton.Conf.EnableIPChangeNotification &&
-		((singleton.Conf.Cover == model.ConfigCoverAll && !singleton.Conf.IgnoredIPNotificationServerIDs[clientID]) ||
-			(singleton.Conf.Cover == model.ConfigCoverIgnoreAll && singleton.Conf.IgnoredIPNotificationServerIDs[clientID])) &&
-		singleton.ServerList[clientID].Host.IP != "" &&
-		host.IP != "" &&
-		singleton.ServerList[clientID].Host.IP != host.IP {
-
-		singleton.SendNotification(singleton.Conf.IPChangeNotificationTag,
-			fmt.Sprintf(
-				"[%s] %s, %s => %s",
-				singleton.Localizer.MustLocalize(&i18n.LocalizeConfig{
-					MessageID: "IPChanged",
-				}),
-				singleton.ServerList[clientID].Name, singleton.IPDesensitize(singleton.ServerList[clientID].Host.IP),
-				singleton.IPDesensitize(host.IP),
-			),
-			nil)
-	}
 
 	/**
 	 * 这里的 singleton 中的数据都是关机前的旧数据
@@ -192,11 +143,6 @@ func (s *NezhaHandler) ReportSystemInfo(c context.Context, r *pb.Host) (*pb.Rece
 	if singleton.ServerList[clientID].Host != nil && singleton.ServerList[clientID].Host.BootTime < host.BootTime {
 		singleton.ServerList[clientID].PrevTransferInSnapshot = singleton.ServerList[clientID].PrevTransferInSnapshot - int64(singleton.ServerList[clientID].State.NetInTransfer)
 		singleton.ServerList[clientID].PrevTransferOutSnapshot = singleton.ServerList[clientID].PrevTransferOutSnapshot - int64(singleton.ServerList[clientID].State.NetOutTransfer)
-	}
-
-	// 不要冲掉国家码
-	if singleton.ServerList[clientID].Host != nil {
-		host.CountryCode = singleton.ServerList[clientID].Host.CountryCode
 	}
 
 	singleton.ServerList[clientID].Host = &host
@@ -228,29 +174,73 @@ func (s *NezhaHandler) IOStream(stream pb.NezhaService_IOStreamServer) error {
 	return nil
 }
 
-func (s *NezhaHandler) LookupGeoIP(c context.Context, r *pb.GeoIP) (*pb.GeoIP, error) {
+func (s *NezhaHandler) ReportGeoIP(c context.Context, r *pb.GeoIP) (*pb.GeoIP, error) {
 	var clientID uint64
 	var err error
 	if clientID, err = s.Auth.Check(c); err != nil {
 		return nil, err
 	}
 
-	// 根据内置数据库查询 IP 地理位置
-	record := &geoip.IPInfo{}
-	ip := r.GetIp()
-	netIP := net.ParseIP(ip)
-	location, err := geoip.Lookup(netIP, record)
-	if err != nil {
-		return nil, err
+	geoip := model.PB2GeoIP(r)
+	joinedIP := geoip.IP.Join()
+	use6 := r.GetUse6()
+
+	singleton.ServerLock.RLock()
+	// 检查并更新DDNS
+	if singleton.ServerList[clientID].EnableDDNS && joinedIP != "" &&
+		(singleton.ServerList[clientID].GeoIP == nil || singleton.ServerList[clientID].GeoIP.IP != geoip.IP) {
+		ipv4 := geoip.IP.IPv4Addr
+		ipv6 := geoip.IP.IPv6Addr
+		providers, err := singleton.GetDDNSProvidersFromProfiles(singleton.ServerList[clientID].DDNSProfiles, &ddns.IP{Ipv4Addr: ipv4, Ipv6Addr: ipv6})
+		if err == nil {
+			for _, provider := range providers {
+				go func(provider *ddns.Provider) {
+					provider.UpdateDomain(context.Background())
+				}(provider)
+			}
+		} else {
+			log.Printf("NEZHA>> 获取DDNS配置时发生错误: %v", err)
+		}
 	}
+
+	// 发送IP变动通知
+	if singleton.ServerList[clientID].GeoIP != nil && singleton.Conf.EnableIPChangeNotification &&
+		((singleton.Conf.Cover == model.ConfigCoverAll && !singleton.Conf.IgnoredIPNotificationServerIDs[clientID]) ||
+			(singleton.Conf.Cover == model.ConfigCoverIgnoreAll && singleton.Conf.IgnoredIPNotificationServerIDs[clientID])) &&
+		singleton.ServerList[clientID].GeoIP.IP.Join() != "" &&
+		joinedIP != "" &&
+		singleton.ServerList[clientID].GeoIP.IP != geoip.IP {
+
+		singleton.SendNotification(singleton.Conf.IPChangeNotificationGroupID,
+			fmt.Sprintf(
+				"[%s] %s, %s => %s",
+				singleton.Localizer.T("IP Changed"),
+				singleton.ServerList[clientID].Name, singleton.IPDesensitize(singleton.ServerList[clientID].GeoIP.IP.Join()),
+				singleton.IPDesensitize(joinedIP),
+			),
+			nil)
+	}
+	singleton.ServerLock.RUnlock()
+
+	// 根据内置数据库查询 IP 地理位置
+	var ip string
+	if geoip.IP.IPv6Addr != "" && (use6 || geoip.IP.IPv4Addr == "") {
+		ip = geoip.IP.IPv6Addr
+	} else {
+		ip = geoip.IP.IPv4Addr
+	}
+
+	netIP := net.ParseIP(ip)
+	location, err := geoipx.Lookup(netIP)
+	if err != nil {
+		log.Printf("NEZHA>> geoip.Lookup: %v", err)
+	}
+	geoip.CountryCode = location
 
 	// 将地区码写入到 Host
-	singleton.ServerLock.RLock()
-	defer singleton.ServerLock.RUnlock()
-	if singleton.ServerList[clientID].Host == nil {
-		return nil, fmt.Errorf("host not found")
-	}
-	singleton.ServerList[clientID].Host.CountryCode = location
+	singleton.ServerLock.Lock()
+	defer singleton.ServerLock.Unlock()
+	singleton.ServerList[clientID].GeoIP = &geoip
 
-	return &pb.GeoIP{Ip: ip, CountryCode: location}, nil
+	return &pb.GeoIP{Ip: nil, CountryCode: location}, nil
 }
